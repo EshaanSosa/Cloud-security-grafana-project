@@ -1,0 +1,111 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Grafana Deployment with Minikube
+
+Resources:
+
+  GrafanaInstance:
+    Type: AWS::EC2::Instance
+    Properties:
+      InstanceType: t2.medium
+      ImageId: ami-0c02fb55956c7d316   # Amazon Linux (may vary by region)
+      KeyName: vockey
+
+      SecurityGroupIds:
+        - !Ref GrafanaSecurityGroup
+
+      UserData:
+        Fn::Base64: !Sub |
+          #!/bin/bash
+
+          yum update -y
+          yum install docker -y
+          systemctl start docker
+          systemctl enable docker
+          usermod -aG docker ec2-user
+
+          curl -LO https://storage.googleapis.com/minikube/releases/latest/minikube-linux-amd64
+          install minikube-linux-amd64 /usr/local/bin/minikube
+
+          su - ec2-user -c "minikube start --driver=docker"
+          sleep 90
+
+          tee /tmp/grafana.yaml <<EOF
+          apiVersion: v1
+          kind: Namespace
+          metadata:
+            name: monitoring
+
+          ---
+          apiVersion: v1
+          kind: PersistentVolumeClaim
+          metadata:
+            name: grafana-pvc
+            namespace: monitoring
+          spec:
+            accessModes:
+              - ReadWriteOnce
+            resources:
+              requests:
+                storage: 1Gi
+
+          ---
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: grafana
+            namespace: monitoring
+          spec:
+            replicas: 1
+            selector:
+              matchLabels:
+                app: grafana
+            template:
+              metadata:
+                labels:
+                  app: grafana
+              spec:
+                containers:
+                - name: grafana
+                  image: grafana/grafana
+                  ports:
+                  - containerPort: 3000
+                  volumeMounts:
+                  - mountPath: /var/lib/grafana
+                    name: grafana-storage
+                volumes:
+                - name: grafana-storage
+                  persistentVolumeClaim:
+                    claimName: grafana-pvc
+
+          ---
+          apiVersion: v1
+          kind: Service
+          metadata:
+            name: grafana-service
+            namespace: monitoring
+          spec:
+            type: NodePort
+            selector:
+              app: grafana
+            ports:
+              - port: 3000
+                targetPort: 3000
+                nodePort: 32000
+          EOF
+
+          su - ec2-user -c "minikube kubectl -- apply -f /tmp/grafana.yaml"
+
+  GrafanaSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Enable SSH and Grafana
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 22
+          ToPort: 22
+          CidrIp: 0.0.0.0/0
+
+        - IpProtocol: tcp
+          FromPort: 32000
+          ToPort: 32000
+          CidrIp: 0.0.0.0/0
